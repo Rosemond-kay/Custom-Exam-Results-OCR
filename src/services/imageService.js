@@ -1,74 +1,55 @@
-const Jimp = require('jimp');
 const sharp = require('sharp');
+const { Jimp } = require('jimp');
 const path = require('path');
+const fs = require('fs');
 
-/**
- * Advanced Cleaning for Blurry Exam Slips
- * Goal: Get crisp black text on a pure white background.
- */
-async function preprocessForOCR(inputPath, outputName) {
-    const outputPath = path.join(__dirname, '../../data/processed', outputName);
-    
-    try {
-        // 1. Use Sharp for the heavy lifting (Resizing & Grayscale)
-        // High resolution (300 DPI equivalent) is better for OCR.
-        const buffer = await sharp(inputPath)
-            .resize({ width: 2000 }) // Upscale if the photo is small/blurry
-            .grayscale()
-            .toBuffer();
-
-        // 2. Use Jimp for Thresholding (Turning pixels into strictly 0 or 255)
-        const image = await Jimp.read(buffer);
+class ImageService {
+    /**
+     * Main Preprocessing Pipeline
+     * @param {string|Buffer} input - Path to image or Buffer from PDF
+     * @param {string} outputName - Name for the processed file
+     */
+    async preprocess(input, outputName) {
+        const processedPath = path.join(__dirname, '../../data/processed', outputName);
         
-        image
-            .contrast(0.7)         // Bump contrast to separate ink from paper
-            .normalize()          // Fix uneven lighting
-            .threshold({ 
-                max: 160,         // Pixels darker than 160 become black
-                replace: 255      // Everything else becomes white
-            })
-            .write(outputPath);
+        try {
+            // 1. HIGH-DPI SCALING & GRAYSCALE (via Sharp)
+            // We upscale to ensure OCR can read small text in 300+ DPI quality
+            const sharpBuffer = await sharp(input)
+                .resize({ width: 2400 }) // Upscale to simulate high DPI
+                .grayscale()            // Operation: Grayscale
+                .modulate({ contrast: 1.5 }) // Bump contrast
+                .toBuffer();
 
-        return outputPath;
-    } catch (err) {
-        console.error(`Error processing ${inputPath}:`, err);
-    }
-}
+            // 2. DENOISING & BINARIZATION (via Jimp)
+            // PHASE 2: JIMP (Denoising & Binarization)
+const image = await Jimp.read(sharpBuffer);
 
-/**
- * Splits a cleaned image into separate lines of text
- * This prevents the OCR from getting confused by page layout.
- */
-async function segmentLines(imageBuffer) {
-    const image = await Jimp.read(imageBuffer);
-    const width = image.bitmap.width;
-    const height = image.bitmap.height;
+// 1. Denoising (Gaussian Blur replacement)
+image.blur(1); 
+
+// 2. Manual Binarization (Scan replacement)
+// We iterate through the raw buffer directly for better performance in v1.0
+for (let i = 0; i < image.bitmap.data.length; i += 4) {
+    const threshold = 140;
+    // Check the Red channel (since it's grayscale, R=G=B)
+    const val = image.bitmap.data[i] < threshold ? 0 : 255;
     
-    let lines = [];
-    let inLine = false;
-    let startY = 0;
-
-    for (let y = 0; y < height; y++) {
-        let hasBlackPixel = false;
-        for (let x = 0; x < width; x++) {
-            const color = Jimp.intToRGBA(image.getPixelColor(x, y));
-            if (color.r < 128) { // Detecting black text on white background
-                hasBlackPixel = true;
-                break;
-            }
-        }
-
-        if (!inLine && hasBlackPixel) {
-            inLine = true;
-            startY = y;
-        } else if (inLine && !hasBlackPixel) {
-            inLine = false;
-            // Crop out the line strip
-            const lineImg = image.clone().crop(0, startY, width, y - startY);
-            lines.push(await lineImg.getBufferAsync(Jimp.MIME_PNG));
-        }
-    }
-    return lines;
+    image.bitmap.data[i] = val;     // R
+    image.bitmap.data[i + 1] = val; // G
+    image.bitmap.data[i + 2] = val; // B
+    // i + 3 is Alpha (transparency)
 }
 
-module.exports = { preprocessForOCR };
+// 3. Save the file (writeAsync is now just write)
+await image.write(processedPath);
+
+            return processedPath;
+        } catch (error) {
+            console.error("Preprocessing Error:", error);
+            throw error;
+        }
+    }
+}
+
+module.exports = new ImageService();
