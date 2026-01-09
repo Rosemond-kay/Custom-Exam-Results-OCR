@@ -10,6 +10,7 @@ class ImageService {
      * @param {string} outputName - Name for the processed file
      */
     async preprocess(input, outputName) {
+        if (!input) throw new Error("Preprocessing failed: No input data provided");
         const processedPath = path.join(__dirname, '../../data/processed', outputName);
         
         try {
